@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/pieteams/piekbs/internal/kb"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/pieteams/piekbs/internal/kb"
 )
 
 const serverInstructions = `PieKBS is a knowledge search engine for this project. It stores distilled
@@ -77,7 +77,9 @@ CITATION RULES (mandatory):
   - If a conflict appears in results, acknowledge both sides.`
 
 // Start creates an MCP HTTP server, registers KB tools, and listens on addr.
-// If apiKey is non-empty, all requests must include a matching x-api-key header.
+// If apiKey is non-empty, requests must include either:
+//   - Authorization: Bearer <apiKey> (recommended, HTTP standard)
+//   - x-api-key: <apiKey> (deprecated, will be removed in 6 months)
 func Start(addr, kbRoot, apiKey string) error {
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, kbRoot, apiKey)
@@ -115,7 +117,7 @@ func RegisterRoutes(mux *http.ServeMux, kbRoot string, apiKey ...string) {
 
 	httpSrv := mcpserver.NewStreamableHTTPServer(s)
 
-	handler := withCORS(withAPIKey(key, httpSrv))
+	handler := withCORS(withAuth(key, withProtocolVersion(httpSrv)))
 	mux.Handle("/mcp", handler)
 	mux.Handle("/mcp/", handler)
 }
@@ -198,35 +200,6 @@ func registerTools(s *mcpserver.MCPServer, kbRoot string, embedder kb.Embedder) 
 		return toolResultJSON(data)
 	})
 
-}
-
-// withAPIKey rejects requests missing a valid x-api-key header.
-// If key is empty, all requests are allowed (auth disabled).
-func withAPIKey(key string, h http.Handler) http.Handler {
-	if key == "" {
-		return h
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("x-api-key") != key {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
-}
-
-// withCORS adds permissive CORS headers for local MCP clients.
-func withCORS(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, x-api-key")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
 }
 
 // toolResultJSON marshals data to JSON and returns a text CallToolResult.
