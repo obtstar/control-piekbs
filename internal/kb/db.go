@@ -83,7 +83,7 @@ func OpenDB(kbRoot string) (*sql.DB, error) {
 	// Clean up legacy sqlite-vec virtual table if present from a previous install.
 	_, _ = db.Exec("DROP TABLE IF EXISTS vec_documents")
 
-	if err := migrateDescription(db); err != nil {
+	if err := migrateDescription(db, kbRoot); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -91,7 +91,7 @@ func OpenDB(kbRoot string) (*sql.DB, error) {
 	return db, nil
 }
 
-func migrateDescription(db *sql.DB) error {
+func migrateDescription(db *sql.DB, kbRoot string) error {
 	rows, err := db.Query("PRAGMA table_info(documents)")
 	if err != nil {
 		return err
@@ -101,6 +101,7 @@ func migrateDescription(db *sql.DB) error {
 	hasDescription := false
 	hasAuthority := false
 	hasDocTimestamp := false
+	hasDistillVersion := false
 	for rows.Next() {
 		var cid int
 		var name, ctype string
@@ -119,6 +120,9 @@ func migrateDescription(db *sql.DB) error {
 		if name == "doc_timestamp" {
 			hasDocTimestamp = true
 		}
+		if name == "distill_version" {
+			hasDistillVersion = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -136,6 +140,35 @@ func migrateDescription(db *sql.DB) error {
 	if !hasDocTimestamp {
 		if _, err := db.Exec("ALTER TABLE documents ADD COLUMN doc_timestamp INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
+		}
+	}
+
+	// Migrate distill_version column.
+	if !hasDistillVersion {
+		if _, err := db.Exec("ALTER TABLE documents ADD COLUMN distill_version TEXT"); err != nil {
+			return err
+		}
+		// Backfill from existing wiki source-notes frontmatter.
+		notesDir := filepath.Join(kbRoot, "wiki", "source-notes")
+		if _, statErr := os.Stat(notesDir); statErr == nil {
+			filepath.Walk(notesDir, func(path string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() || filepath.Ext(path) != ".md" {
+					return nil
+				}
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return nil
+				}
+				parsed := ParseMarkdown(string(data))
+				if v, ok := parsed.RawFM["distill_version"]; ok {
+					if s, ok := v.(string); ok && s != "" {
+						rel, _ := filepath.Rel(kbRoot, path)
+						db.Exec("UPDATE documents SET distill_version = ? WHERE path = ?",
+							s, filepath.ToSlash(rel))
+					}
+				}
+				return nil
+			})
 		}
 	}
 
