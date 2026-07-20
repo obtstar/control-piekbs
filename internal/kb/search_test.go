@@ -174,7 +174,7 @@ func TestHybridRankSynthesizedBoostIsMultiplicative(t *testing.T) {
 		{ID: "a", Kind: "source-note", FTSRank: -1.0},
 		{ID: "b", Kind: "concept", FTSRank: -1.0},
 	}
-	result := HybridRank(fts, nil, nil, nil)
+	result := HybridRank(fts, nil, nil, nil, []string{"test"})
 	var aScore, bScore float64
 	for _, r := range result {
 		if r.ID == "a" {
@@ -251,6 +251,22 @@ func TestSortResults_FTSRankFinalTiebreaker(t *testing.T) {
 	}
 }
 
+// TestSortResults_ANDCoverageFromTitleSnippet verifies that AND-result Coverage is
+// recomputed from Title+Snippet by sortWithPriority, not simply set to total keyword count.
+func TestSortResults_ANDCoverageFromTitleSnippet(t *testing.T) {
+	// Simulate an AND result for keywords ["Go", "Python"] where the document
+	// was returned by FTS AND (both keywords in full content), but Title+Snippet
+	// only contains "Go" — not "Python".
+	results := []SearchResult{
+		{ID: "and-doc", Title: "Go article", Snippet: "fast compiled language", WikiPriority: 1.0, FTSRank: -1.0, MatchPhase: 0, Coverage: 2},
+	}
+	sortResults(results, []string{"Go", "Python"})
+	// Coverage must reflect Title+Snippet (only "Go" present), not total keywords (2).
+	if results[0].Coverage != 1 {
+		t.Errorf("AND-result Coverage should be 1 (from Title+Snippet), got %d", results[0].Coverage)
+	}
+}
+
 // TestSearchResultMatchPhaseFields verifies the new struct fields exist and are zero-valued by default.
 func TestSearchResultMatchPhaseFields(t *testing.T) {
 	r := SearchResult{ID: "test", Title: "Test"}
@@ -259,6 +275,35 @@ func TestSearchResultMatchPhaseFields(t *testing.T) {
 	}
 	if r.Coverage != 0 {
 		t.Errorf("default Coverage should be 0, got %d", r.Coverage)
+	}
+}
+
+func TestSearchLayered_WikiPriority(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenDB(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Insert a raw file and a wiki note with same content.
+	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp, schema_version)
+		VALUES ('raw/test.md', 'raw/test.md', 'raw', '', 'Test RAG', '', 'RAG content', 'h1', 1, 3, 0, 0)`)
+	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp, schema_version)
+		VALUES ('wiki/test.md', 'wiki/test.md', 'wiki', 'source-note', 'Test RAG', '', 'RAG content', 'h2', 1, 3, 0, 1)`)
+	// rebuild FTS
+	db.Exec(`INSERT INTO document_fts(document_fts) VALUES('rebuild')`)
+
+	results, _, err := SearchLayered(db, dir, "RAG", nil, nil, 5, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected >=2 results, got %d", len(results))
+	}
+	// Wiki should rank above raw.
+	if results[0].Layer != "wiki" {
+		t.Errorf("expected first result to be wiki, got %s", results[0].Layer)
 	}
 }
 

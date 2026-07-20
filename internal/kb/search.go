@@ -43,7 +43,7 @@ type SearchResult struct {
 	VecScore     float64      `json:"vec_score,omitempty"`
 	HybridScore  float64      `json:"hybrid_score,omitempty"`
 	MatchPhase   int          `json:"match_phase,omitempty"` // 0=AND, 1=OR, 2=LIKE
-	Coverage     int          `json:"coverage,omitempty"`    // 命中查询词条数（AND 结果=总词数，OR/LIKE 由 sortResults 补全）
+	Coverage     int          `json:"coverage,omitempty"`    // Title+Snippet 中命中的查询词条数（由 sortWithPriority 统一计算）
 	GraphBoost   float64      `json:"graph_boost,omitempty"`
 	Related      []RelatedDoc `json:"related,omitempty"`
 	Conflicts    []string     `json:"conflicts,omitempty"`
@@ -255,12 +255,11 @@ func scanResults(db *sql.DB, sqlStr string, args ...interface{}) ([]SearchResult
 	return results, rows.Err()
 }
 
-// sortResults sorts results by: WikiPriority → MatchPhase → Coverage → FTSRank.
-// keywords is used to compute Coverage for OR/LIKE results (AND results already have Coverage set).
-func sortResults(results []SearchResult, keywords []string) {
-	// Compute Coverage for OR/LIKE results by counting keyword hits in Title+Snippet.
+// sortWithPriority sorts results by WikiPriority → MatchPhase → Coverage → finalKey.
+// Coverage is computed by counting keyword hits in Title+Snippet.
+func sortWithPriority(results []SearchResult, keywords []string, finalKey func(a, b SearchResult) bool) {
 	for i := range results {
-		if results[i].MatchPhase > 0 && len(keywords) > 0 {
+		if len(keywords) > 0 {
 			text := strings.ToLower(results[i].Title + " " + results[i].Snippet)
 			count := 0
 			for _, kw := range keywords {
@@ -282,6 +281,14 @@ func sortResults(results []SearchResult, keywords []string) {
 		if a.Coverage != b.Coverage {
 			return a.Coverage > b.Coverage
 		}
+		return finalKey(a, b)
+	})
+}
+
+// sortResults sorts results by: WikiPriority → MatchPhase → Coverage → FTSRank.
+// keywords is used to compute Coverage for OR/LIKE results (AND results already have Coverage set).
+func sortResults(results []SearchResult, keywords []string) {
+	sortWithPriority(results, keywords, func(a, b SearchResult) bool {
 		return a.FTSRank < b.FTSRank
 	})
 }
@@ -459,9 +466,10 @@ func SearchLayered(db *sql.DB, kbRoot, query string, layer, kind *string, source
 		results[i].HybridScore = score
 	}
 
-	// Sort by HybridScore descending.
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].HybridScore > results[j].HybridScore
+	// Sort by WikiPriority → MatchPhase → Coverage → HybridScore.
+	keywords := strings.Fields(query)
+	sortWithPriority(results, keywords, func(a, b SearchResult) bool {
+		return a.HybridScore > b.HybridScore
 	})
 
 	// Split into source-notes and synthesized, cap each pool.
@@ -507,7 +515,7 @@ func SearchLayered(db *sql.DB, kbRoot, query string, layer, kind *string, source
 // synthesizedBoost (multiplicative 1.3x for concept/comparison/decision)
 // and authority adjustments. Returns results sorted by HybridScore descending.
 // graph may be nil; embedder may be nil (FTS-only mode).
-func HybridRank(fts []SearchResult, graph map[string]float64, conflicts []Conflict, embedder Embedder) []SearchResult {
+func HybridRank(fts []SearchResult, graph map[string]float64, conflicts []Conflict, embedder Embedder, keywords []string) []SearchResult {
 	results := make([]SearchResult, len(fts))
 	copy(results, fts)
 
@@ -527,9 +535,9 @@ func HybridRank(fts []SearchResult, graph map[string]float64, conflicts []Confli
 		results[i].HybridScore = rrfScore
 	}
 
-	// Sort by HybridScore descending.
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].HybridScore > results[j].HybridScore
+	// Sort by WikiPriority → MatchPhase → Coverage → HybridScore.
+	sortWithPriority(results, keywords, func(a, b SearchResult) bool {
+		return a.HybridScore > b.HybridScore
 	})
 	return results
 }
