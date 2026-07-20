@@ -146,7 +146,7 @@ func runSchemaUpgrade(kbRoot string) error {
 		return fmt.Errorf("upgrade schema: %w", err)
 	}
 
-	fmt.Printf("正在升级 schema %s → %s...\n", oldVersion, version.Version)
+	fmt.Printf("正在升级 schema %d → %s...\n", oldVersion, version.Version)
 	for _, f := range updated {
 		fmt.Printf("  已更新: schema/%s\n", f)
 	}
@@ -429,7 +429,11 @@ func runServe(kbRoot string) error {
 	mux := http.NewServeMux()
 	mcp.RegisterRoutes(mux, kbRoot, cfg.Server.APIKey)
 
-	webSrv := webui.NewServer(kbRoot)
+	embeddedVer, err := kbinit.ReadSchemaVersion()
+	if err != nil {
+		log.Printf("warning: read embedded schema version: %v", err)
+	}
+	webSrv := webui.NewServer(kbRoot, embeddedVer)
 	mux.Handle("/", webSrv.Handler())
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

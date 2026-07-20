@@ -15,7 +15,6 @@ import (
 	"github.com/pieteams/piekbs/internal/config"
 	"github.com/pieteams/piekbs/internal/kb"
 	"github.com/pieteams/piekbs/internal/larkimport"
-	"github.com/pieteams/piekbs/internal/version"
 )
 
 func newTestServer(t *testing.T) (*Server, string) {
@@ -24,7 +23,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	if err := os.MkdirAll(filepath.Join(dir, "index"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return NewServer(dir), dir
+	return NewServer(dir, 0), dir
 }
 
 func TestSettingsGetIncludesLanguage(t *testing.T) {
@@ -91,7 +90,7 @@ func TestSettingsDoesNotExposeOrClearSavedToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := NewServer(kbRoot)
+	server := NewServer(kbRoot, 0)
 	getReq := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	getRec := httptest.NewRecorder()
 	server.handleSettings(getRec, getReq)
@@ -129,7 +128,7 @@ func TestSettingsDoesNotExposeOrClearSavedToken(t *testing.T) {
 }
 
 func TestImportLarkAPI(t *testing.T) {
-	server := NewServer(t.TempDir())
+	server := NewServer(t.TempDir(), 0)
 	server.importLark = func(_ context.Context, _, url, name string) (*larkimport.Result, error) {
 		if url != "https://example.larkoffice.com/wiki/abc" || name != "" {
 			t.Fatalf("unexpected import request: url=%q name=%q", url, name)
@@ -173,14 +172,11 @@ func TestDistillOutdated_DevVersion_ReturnsZero(t *testing.T) {
 	}
 	t.Cleanup(kb.CloseGlobalDB)
 
-	// Insert a wiki source-note (would be outdated for non-dev versions).
+	// Insert a wiki source-note (would be outdated for non-zero schema versions).
 	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp)
 		VALUES ('wiki/note.md', 'wiki/note.md', 'wiki', 'source-note', 'Note', '', 'body', 'h1', 1, 3, 0)`)
 
-	orig := version.Version
-	version.Version = "dev"
-	defer func() { version.Version = orig }()
-
+	// No config.yaml → schema_version defaults to 0 → FindOutdatedNotes returns nil.
 	req := httptest.NewRequest(http.MethodGet, "/api/distill/outdated", nil)
 	w := httptest.NewRecorder()
 	s.handleDistillOutdated(w, req)
@@ -193,7 +189,7 @@ func TestDistillOutdated_DevVersion_ReturnsZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp["count"].(float64) != 0 {
-		t.Errorf("expected count 0 for dev, got %v", resp["count"])
+		t.Errorf("expected count 0 for schema_version 0, got %v", resp["count"])
 	}
 }
 
@@ -205,12 +201,12 @@ func TestDistillOutdated_ReturnsOutdatedCount(t *testing.T) {
 	}
 	t.Cleanup(kb.CloseGlobalDB)
 
-	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp)
-		VALUES ('wiki/old.md', 'wiki/old.md', 'wiki', 'source-note', 'Old', '', 'body', 'h1', 1, 3, 0)`)
+	// Insert a source-note with schema_version 0 (default, i.e. outdated).
+	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp, schema_version)
+		VALUES ('wiki/old.md', 'wiki/old.md', 'wiki', 'source-note', 'Old', '', 'body', 'h1', 1, 3, 0, 0)`)
 
-	orig := version.Version
-	version.Version = "1.0.0"
-	defer func() { version.Version = orig }()
+	// Write config with schema_version "2" so note (0) is outdated.
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("schema_version: \"2\"\n"), 0o644)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/distill/outdated", nil)
 	w := httptest.NewRecorder()
@@ -225,9 +221,6 @@ func TestDistillOutdated_ReturnsOutdatedCount(t *testing.T) {
 	}
 	if resp["count"].(float64) != 1 {
 		t.Errorf("expected count 1, got %v", resp["count"])
-	}
-	if resp["current_version"].(string) != "1.0.0" {
-		t.Errorf("expected current_version 1.0.0, got %v", resp["current_version"])
 	}
 }
 
@@ -251,10 +244,7 @@ func TestDistillRefreshOutdated_NoOutdated(t *testing.T) {
 	t.Cleanup(kb.CloseGlobalDB)
 	_ = db
 
-	orig := version.Version
-	version.Version = "dev"
-	defer func() { version.Version = orig }()
-
+	// No config.yaml → schema_version defaults to 0 → no outdated notes.
 	req := httptest.NewRequest(http.MethodPost, "/api/distill/refresh-outdated", nil)
 	w := httptest.NewRecorder()
 	s.handleDistillRefreshOutdated(w, req)
@@ -298,13 +288,12 @@ func TestDistillRefreshOutdated_EnqueuesAndDeletesWiki(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Insert outdated DB record.
-	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp)
-		VALUES ('wiki/old.md', 'wiki/old.md', 'wiki', 'source-note', 'Test', '', 'body', 'h1', 1, 3, 0)`)
+	// Insert outdated DB record (schema_version 0, default).
+	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp, schema_version)
+		VALUES ('wiki/old.md', 'wiki/old.md', 'wiki', 'source-note', 'Test', '', 'body', 'h1', 1, 3, 0, 0)`)
 
-	orig := version.Version
-	version.Version = "1.0.0"
-	defer func() { version.Version = orig }()
+	// Write config with schema_version "2" so note (0) is outdated.
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("schema_version: \"2\"\n"), 0o644)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/distill/refresh-outdated", nil)
 	w := httptest.NewRecorder()
@@ -362,12 +351,11 @@ func TestDistillRefreshOutdated_CleansOrphanNoSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp)
-		VALUES ('wiki/orphan.md', 'wiki/orphan.md', 'wiki', 'source-note', 'Orphan', '', 'body', 'h1', 1, 3, 0)`)
+	db.Exec(`INSERT INTO documents (id, path, layer, kind, title, description, content, content_hash, updated_at, authority, doc_timestamp, schema_version)
+		VALUES ('wiki/orphan.md', 'wiki/orphan.md', 'wiki', 'source-note', 'Orphan', '', 'body', 'h1', 1, 3, 0, 0)`)
 
-	orig := version.Version
-	version.Version = "1.0.0"
-	defer func() { version.Version = orig }()
+	// Write config with schema_version "2" so note (0) is outdated.
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("schema_version: \"2\"\n"), 0o644)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/distill/refresh-outdated", nil)
 	w := httptest.NewRecorder()
@@ -414,5 +402,79 @@ func TestDistillRefreshOutdated_ConflictWhenMutexHeld(t *testing.T) {
 	}
 	if resp["error"] != "refresh already in progress" {
 		t.Errorf("expected conflict error message, got %v", resp["error"])
+	}
+}
+
+func TestSchemaStatus_NoConfig_ReturnsZeroVersion(t *testing.T) {
+	s, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/schema/status", nil)
+	w := httptest.NewRecorder()
+	s.handleSchemaStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	// No config.yaml → schema_version defaults to 0.
+	if resp["schema_version"].(float64) != 0 {
+		t.Errorf("expected schema_version 0, got %v", resp["schema_version"])
+	}
+	// embeddedSchemaVersion is 0 (test default) → not outdated.
+	if resp["outdated"] != false {
+		t.Errorf("expected outdated false, got %v", resp["outdated"])
+	}
+}
+
+func TestSchemaStatus_OutdatedWhenConfigBehindEmbedded(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "index"), 0o755)
+	// Create server with embedded version 3.
+	s := NewServer(dir, 3)
+
+	// Write config with schema_version "1" (behind embedded 3).
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("schema_version: \"1\"\n"), 0o644)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/schema/status", nil)
+	w := httptest.NewRecorder()
+	s.handleSchemaStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["schema_version"].(float64) != 1 {
+		t.Errorf("expected schema_version 1, got %v", resp["schema_version"])
+	}
+	if resp["outdated"] != true {
+		t.Errorf("expected outdated true when config < embedded, got %v", resp["outdated"])
+	}
+}
+
+func TestSchemaStatus_NotOutdatedWhenConfigMatchesEmbedded(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "index"), 0o755)
+	s := NewServer(dir, 2)
+
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("schema_version: \"2\"\n"), 0o644)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/schema/status", nil)
+	w := httptest.NewRecorder()
+	s.handleSchemaStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["outdated"] != false {
+		t.Errorf("expected outdated false when config == embedded, got %v", resp["outdated"])
 	}
 }

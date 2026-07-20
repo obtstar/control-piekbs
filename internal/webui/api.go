@@ -228,8 +228,8 @@ func (s *Server) handleSchemaStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]interface{}{
 		"current_version": version.Version,
-		"schema_version":  cfg.SchemaVersion,
-		"outdated":        cfg.SchemaVersion != version.Version,
+		"schema_version":  cfg.SchemaVersionInt(),
+		"outdated":        cfg.SchemaVersionInt() < s.embeddedSchemaVersion,
 	})
 }
 
@@ -240,32 +240,38 @@ func (s *Server) handleSchemaUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	updated, _, err := kbinit.UpgradeSchema(s.kbRoot)
+	updated, oldVersion, err := kbinit.UpgradeSchema(s.kbRoot)
 	if err != nil {
 		kbErrToHTTP(w, err)
 		return
 	}
 	writeJSON(w, map[string]interface{}{
 		"updated":         updated,
+		"old_version":     oldVersion,
 		"current_version": version.Version,
 	})
 }
 
 // handleDistillOutdated returns the count of outdated source-notes. GET /api/distill/outdated
 func (s *Server) handleDistillOutdated(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.Load(s.kbRoot)
+	if err != nil {
+		kbErrToHTTP(w, err)
+		return
+	}
 	db, err := kb.GlobalDB(s.kbRoot)
 	if err != nil {
 		kbErrToHTTP(w, err)
 		return
 	}
-	paths, err := kb.FindOutdatedNotes(db, version.Version)
+	paths, err := kb.FindOutdatedNotes(db, cfg.SchemaVersionInt())
 	if err != nil {
 		kbErrToHTTP(w, err)
 		return
 	}
 	writeJSON(w, map[string]interface{}{
 		"count":           len(paths),
-		"current_version": version.Version,
+		"current_version": cfg.SchemaVersionInt(),
 	})
 }
 
@@ -282,12 +288,17 @@ func (s *Server) handleDistillRefreshOutdated(w http.ResponseWriter, r *http.Req
 	}
 	defer s.refreshMu.Unlock()
 
+	cfg, err := config.Load(s.kbRoot)
+	if err != nil {
+		kbErrToHTTP(w, err)
+		return
+	}
 	db, err := kb.GlobalDB(s.kbRoot)
 	if err != nil {
 		kbErrToHTTP(w, err)
 		return
 	}
-	outdated, err := kb.FindOutdatedNotes(db, version.Version)
+	outdated, err := kb.FindOutdatedNotes(db, cfg.SchemaVersionInt())
 	if err != nil {
 		kbErrToHTTP(w, err)
 		return
