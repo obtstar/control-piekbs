@@ -465,11 +465,14 @@ func runServe(kbRoot string) error {
 			}
 		}()
 		tray.Run(kbRoot, cfg.Server.Port, cfg.UI.Language, actionCh)
+		// fork 补丁（FINDING-041，待上游评审）：非 darwin 平台 tray 为 stub
+		// 会立即返回；托盘异常退出也不应让 serve 静默 exit 0——回退 headless 阻塞。
+		// 正常退出路径是托盘 Quit → actionCh → shutdown()，不会走到这里。
+		log.Printf("tray: unavailable or exited — falling back to headless (Ctrl-C to stop)")
 	} else {
 		log.Printf("no display detected — running headless (Ctrl-C to stop)")
-		select {} // block forever; SIGTERM handler above handles shutdown
 	}
-	return nil
+	select {} // block forever; SIGTERM handler above handles shutdown
 }
 
 // hasDisplay reports whether a graphical display environment is available.
