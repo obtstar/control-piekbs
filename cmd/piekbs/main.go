@@ -441,7 +441,8 @@ func runServe(kbRoot string) error {
 		log.Printf("warning: read embedded schema version: %v", err)
 	}
 	webSrv := webui.NewServer(kbRoot, embeddedVer)
-	mux.Handle("/", webSrv.Handler())
+	// fork 补丁（FINDING-030）：REST 面 /api/* 随 server.api_key 启用 Bearer 认证
+	mux.Handle("/", webui.WithAPIKey(cfg.Server.APIKey, webSrv.Handler()))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
