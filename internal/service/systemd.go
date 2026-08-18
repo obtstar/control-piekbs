@@ -19,13 +19,15 @@ func installLinux(kbRoot string) error {
 		return fmt.Errorf("create systemd user dir: %w", err)
 	}
 
+	// 仅装 piekbs-mcp：serve 内嵌文件监听 + 启动追平 + 蒸馏工作池
+	// （cmd/piekbs/main.go setupRuntime），indexer 独立单元引用的
+	// `piekbs watch` 子命令不存在（FINDING-050），重复且必 crash-loop
 	units := []struct {
 		name        string
 		description string
 		execStart   string
 	}{
-		{"piekbs-mcp", "PieKBS MCP HTTP server", bin + " serve"},
-		{"piekbs-indexer", "PieKBS KB file watcher", bin + " watch"},
+		{"piekbs-mcp", "PieKBS MCP HTTP server（内嵌 watcher/追平/蒸馏工作池）", bin + " serve"},
 	}
 
 	for _, u := range units {
@@ -62,12 +64,15 @@ WantedBy=default.target
 	return nil
 }
 
-// linuxUnits are the systemd user units managed by PieKBS.
-var linuxUnits = []string{"piekbs-mcp", "piekbs-indexer"}
+// linuxUnits 当前管理的 systemd user 单元（FINDING-050 起仅 piekbs-mcp）
+var linuxUnits = []string{"piekbs-mcp"}
+
+// legacyLinuxUnits 历史版本装过、现已移除的单元：uninstall 时兜底清理（不存在则忽略）
+var legacyLinuxUnits = []string{"piekbs-indexer"}
 
 func uninstallLinux() error {
 	unitDir := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
-	for _, name := range linuxUnits {
+	for _, name := range append(linuxUnits, legacyLinuxUnits...) {
 		exec.Command("systemctl", "--user", "disable", "--now", name).Run()
 		os.Remove(filepath.Join(unitDir, name+".service"))
 		fmt.Printf("  Uninstalled: %s\n", name)
