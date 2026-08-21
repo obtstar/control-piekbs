@@ -118,8 +118,26 @@ func countMarkdownPages(dir string) int {
 	return count
 }
 
+// noteHasLiveSource 多页/分组蒸馏产物（FINDING-052）的存活判据：页面前置元数据
+// sources 任一条目解析到 raw/ 下真实存在的文件即非孤儿。PurgeOrphanWikiFiles 原先
+// 只按 stem 判据（假定 1:1 蒸馏），会把 wiki-distill 技能的多页拆分产物误删。
+func noteHasLiveSource(kbRoot, path string) bool {
+	doc, err := ParseMarkdownFile(path)
+	if err != nil {
+		return false
+	}
+	for _, s := range doc.Sources {
+		p := filepath.Join(kbRoot, s)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 // PurgeOrphanWikiFiles removes generated files in wiki/source-notes/ and
-// raw/converted/ whose filename stem has no corresponding file in raw/.
+// raw/converted/ whose filename stem has no corresponding file in raw/ and
+// whose frontmatter `sources` does not reference an existing raw file.
 // Reserved files (index.md, log.md) are kept. Returns the number removed.
 func PurgeOrphanWikiFiles(kbRoot string) (int, error) {
 	rawDir := filepath.Join(kbRoot, "raw")
@@ -168,7 +186,9 @@ func PurgeOrphanWikiFiles(kbRoot string) (int, error) {
 			stem := strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
 			// converted/ files are named "<rawname>.md" (stem == raw stem);
 			// a converted .md whose stem matches a raw file is NOT orphan.
-			if !rawStems[stem] {
+			// wiki/source-notes 另按 frontmatter sources 判据（FINDING-052）：
+			// 多页/分组蒸馏产物声明了存在的 raw 源即非孤儿。
+			if !rawStems[stem] && !noteHasLiveSource(kbRoot, path) {
 				if rmErr := os.Remove(path); rmErr == nil {
 					removed++
 				}

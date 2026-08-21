@@ -109,3 +109,41 @@ func TestPurgeOrphanWikiFiles_MissingRawIsSafe(t *testing.T) {
 		t.Error("note.md must survive when raw/ is missing")
 	}
 }
+
+// TestPurgeOrphanWikiFiles_SourcesAware（FINDING-052）：多页/分组蒸馏产物（stem 不
+// 匹配任何 raw 文件）只要 frontmatter sources 声明了存在的 raw 源即存活；声明不存在的
+// 源（源已被删除）仍是孤儿，照常清除。
+func TestPurgeOrphanWikiFiles_SourcesAware(t *testing.T) {
+	dir := t.TempDir()
+	notesDir := filepath.Join(dir, "wiki", "source-notes", "docset")
+	os.MkdirAll(notesDir, 0755)
+	os.MkdirAll(filepath.Join(dir, "raw"), 0755)
+	// raw 源存在
+	os.WriteFile(filepath.Join(dir, "raw", "kept.md"), []byte("raw"), 0644)
+
+	// 多页产物声明存在的源 → 存活
+	live := "---\ntype: source-note\ntitle: 活页\nsources:\n  - raw/kept.md\n---\n\n# 活页\n"
+	os.WriteFile(filepath.Join(notesDir, "part1.md"), []byte(live), 0644)
+	// 多页产物声明已被删除的源 → 孤儿清除
+	ghost := "---\ntype: source-note\ntitle: 鬼页\nsources:\n  - raw/ghost.md\n---\n\n# 鬼页\n"
+	os.WriteFile(filepath.Join(notesDir, "part2.md"), []byte(ghost), 0644)
+	// 无 sources 声明且 stem 不匹配 → 孤儿清除
+	os.WriteFile(filepath.Join(notesDir, "bare.md"), []byte("# bare\n"), 0644)
+
+	removed, err := PurgeOrphanWikiFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Errorf("removed %d, want 2", removed)
+	}
+	if _, err := os.Stat(filepath.Join(notesDir, "part1.md")); err != nil {
+		t.Error("part1.md 应存活（sources 指向存在的 raw/kept.md）")
+	}
+	if _, err := os.Stat(filepath.Join(notesDir, "part2.md")); !os.IsNotExist(err) {
+		t.Error("part2.md 应清除（sources 指向不存在的 raw/ghost.md）")
+	}
+	if _, err := os.Stat(filepath.Join(notesDir, "bare.md")); !os.IsNotExist(err) {
+		t.Error("bare.md 应清除（无 sources 且 stem 不匹配）")
+	}
+}
