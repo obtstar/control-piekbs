@@ -78,24 +78,12 @@ func installMacOS(kbRoot string) error {
 	loadService(filepath.Join(agentsDir, "com.piekbs.mcp.plist"))
 	fmt.Println("  Installed and started: com.piekbs.mcp")
 
-	// Indexer
-	idxCfg := launchdConfig{
-		Label:     "com.piekbs.indexer",
-		Args:      []string{bin, "watch"},
-		KBRoot:    kbRoot,
-		Path:      servicePath(),
-		RunAtLoad: false,
-		KeepAlive: false,
-		WatchPath: filepath.Join(kbRoot, "raw"),
-	}
-	if err := writePlist(agentsDir, idxCfg); err != nil {
-		return err
-	}
-	loadService(filepath.Join(agentsDir, "com.piekbs.indexer.plist"))
-	fmt.Println("  Installed and started: com.piekbs.indexer")
+	// Indexer 单元移除（FINDING-050 遗留：`piekbs watch` 子命令不存在，安装即 crash-loop；
+	// 与 Linux systemd 修复同语义——serve 内嵌 watcher/追平/蒸馏池，无需独立 indexer。
+	// macLabels 保留 com.piekbs.indexer 供 uninstall/status 兜底清理历史残留）
 
 	fmt.Printf("\nMCP HTTP server: http://127.0.0.1:8766/mcp\n")
-	fmt.Printf("Logs: /tmp/com.piekbs.mcp.log, /tmp/com.piekbs.indexer.log\n")
+	fmt.Printf("Logs: /tmp/com.piekbs.mcp.log\n")
 	return nil
 }
 
